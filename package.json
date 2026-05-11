@@ -1,6 +1,6 @@
 {
   "name": "blueberry-serde-ts",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "TypeScript implementation of the Blueberry binary wire format. Companion to bluerobotics/blueberry-compiler.",
   "type": "module",
   "main": "./dist/index.js",
@@ -19,6 +19,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "prepare": "tsc -p tsconfig.build.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\" \"examples/**/*.ts\"",
