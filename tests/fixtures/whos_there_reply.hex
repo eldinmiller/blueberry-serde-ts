@@ -1,0 +1,60 @@
+# Synthetic WhosThere reply frame.
+#
+# A `WhosThere` reply is a single message with module_key=0x4244 and
+# message_key=0x1971 carrying a fixed-size struct of identification fields.
+# The exact field schema is owned by `blueberry_transcode_firmware` and not
+# part of this runtime; the fixture below is constructed by hand to match the
+# canonical wire format rules (little-endian, alignment-sorted primitives,
+# 4-byte word multiples, packet magic + CRC-16-CCITT).
+#
+# This fixture is asserted byte-for-byte by `tests/golden.test.ts`; a future
+# capture from real firmware over UDP 0x4242 can replace these bytes verbatim
+# without changing the runtime or the test, as long as the schema below is
+# preserved (or the test's expectations are updated alongside).
+#
+# Message schema (WhosThere, hand-anchored to the canonical wire format):
+#   u64 serial_number   = 0x0102030405060708
+#   u32 firmware_build  = 0x00100001
+#   u16 hardware_type   = 0x0002 (HW_LUMEN)
+#   u8  protocol_major  = 0x02
+#   u8  protocol_minor  = 0x01
+#   bool calibrated     = true
+#   bool boot_complete  = true
+#
+# Layout (after the 8-byte packet header):
+#   msg header (8): module_message_key 0x42441971 LE, length=7 words, max_ord=9
+#   body (20 bytes incl. trailing pad):
+#     u64 serial      [0..8)   08 07 06 05 04 03 02 01
+#     u32 build       [8..12)  01 00 10 00
+#     u16 hw_type     [12..14) 02 00
+#     u8  proto_major [14]     02
+#     u8  proto_minor [15]     01
+#     bool byte       [16]     03 (calibrated=bit0=1, boot_complete=bit1=1)
+#     pad             [17..20) 00 00 00
+#
+# Total packet bytes: 8 (pkt hdr) + 8 (msg hdr) + 20 (body+pad) = 36 bytes = 9 words.
+# CRC-16-CCITT (init 0xFFFF, poly 0x1021) over message data is computed and
+# asserted by the test; the test recomputes it rather than hard-coding the
+# value to keep the fixture self-consistent.
+#
+# Bytes (hex, whitespace and # comments stripped before parsing):
+
+# packet header (8 bytes) — last 2 bytes are placeholder CRC, replaced at load
+42 6C 75 65  # magic "Blue"
+09 00        # length_words = 9 (= 36 bytes total)
+00 00        # crc placeholder (recomputed by test)
+
+# message header (8 bytes)
+71 19 44 42  # module_message_key = 0x42441971 LE
+07 00        # length = 7 words (= 28 bytes: 8-byte hdr + 17-byte body padded to 20)
+09 00        # max_ordinal = 9, tbd = 0 (7 payload fields → max_ord = 7 + 2)
+
+# body (16 bytes after header → exactly 4 words)
+08 07 06 05 04 03 02 01  # u64 serial_number = 0x0102030405060708 LE
+01 00 10 00              # u32 firmware_build  = 0x00100001 LE
+02 00                    # u16 hardware_type   = 0x0002 LE
+02                       # u8  protocol_major  = 0x02
+01                       # u8  protocol_minor  = 0x01
+
+# packed-bool byte (calibrated=bit0=1, boot_complete=bit1=1 → 0x03) + pad to word
+03 00 00 00
