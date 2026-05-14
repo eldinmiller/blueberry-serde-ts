@@ -24,6 +24,15 @@ export class BlueberryReader {
   private payloadFieldCount: number | null = null;
   /** Number of top-level fields already consumed via `fieldDelta()`. */
   private fieldIndex = 0;
+  /**
+   * While iterating a sequence element (`inSeqData = true`), tracks the
+   * highest absolute byte offset consumed by any string / nested-sequence
+   * deferred block dereferenced during the element's read callback. The
+   * sequence walker advances `dataPos` past this value so the next element
+   * starts after the prior element's inline + deferred bytes (which the
+   * writer interleaves per element).
+   */
+  private blockTailPos = 0;
 
   constructor(
     private readonly data: Uint8Array,
@@ -267,6 +276,10 @@ export class BlueberryReader {
         `BlueberryReader: string body out of bounds (need ${bytesEnd}, have ${this.data.length})`,
       );
     }
+    if (this.inSeqData) {
+      const paddedEnd = (bytesEnd + 3) & ~3;
+      if (paddedEnd > this.blockTailPos) this.blockTailPos = paddedEnd;
+    }
     return new TextDecoder('utf-8', { fatal: true }).decode(
       this.data.subarray(bytesStart, bytesEnd),
     );
@@ -299,27 +312,56 @@ export class BlueberryReader {
     }
     const count = this.view.getUint32(dataStart, true);
     const elementsStart = dataStart + 4;
+    if (this.inSeqData) {
+      const blockEnd = elementsStart + count * _elemByteLen;
+      const paddedEnd = (blockEnd + 3) & ~3;
+      if (paddedEnd > this.blockTailPos) this.blockTailPos = paddedEnd;
+    }
     return new SequenceReader(this, count, elementsStart, _elemByteLen);
   }
 
-  /** @internal Save/restore plumbing for `SequenceReader.readElement`. */
-  _saveAndEnterDataBlock(dataPos: number): {
+  /**
+   * @internal Save/restore plumbing for `SequenceReader.readElement`.
+   *
+   * `dataBlockStart` is the absolute offset of the sequence's elements region
+   * (the byte after the sequence's `u32 count`). The sub-writer that
+   * serialized each element patched its inline string / sequence indices
+   * relative to that base, so we rebase `messageStart` here for the duration
+   * of the element read.
+   */
+  _saveAndEnterDataBlock(
+    dataPos: number,
+    dataBlockStart: number,
+  ): {
     savedPos: number;
     savedInSeqData: boolean;
+    savedMessageStart: number;
+    savedBlockTailPos: number;
   } {
     const savedPos = this.pos;
     const savedInSeqData = this.inSeqData;
+    const savedMessageStart = this.messageStart;
+    const savedBlockTailPos = this.blockTailPos;
     this.pos = dataPos;
     this.inSeqData = true;
+    this.messageStart = dataBlockStart;
+    this.blockTailPos = dataPos;
     this.flushBools();
-    return { savedPos, savedInSeqData };
+    return { savedPos, savedInSeqData, savedMessageStart, savedBlockTailPos };
   }
 
   /** @internal Restore reader state after `SequenceReader.readElement`. */
-  _restoreFromDataBlock(saved: { savedPos: number; savedInSeqData: boolean }): number {
-    const dataPosAfter = this.pos;
+  _restoreFromDataBlock(saved: {
+    savedPos: number;
+    savedInSeqData: boolean;
+    savedMessageStart: number;
+    savedBlockTailPos: number;
+  }): number {
+    const dataPosAfter = this.pos > this.blockTailPos ? this.pos : this.blockTailPos;
     this.pos = saved.savedPos;
     this.inSeqData = saved.savedInSeqData;
+    this.messageStart = saved.savedMessageStart;
+    this.blockTailPos = saved.savedBlockTailPos;
     return dataPosAfter;
   }
 }
@@ -329,6 +371,7 @@ export class BlueberryReader {
  */
 export class SequenceReader {
   private dataPos: number;
+  private readonly elementsStart: number;
 
   constructor(
     private readonly parent: BlueberryReader,
@@ -337,6 +380,7 @@ export class SequenceReader {
     readonly elementByteLength: number,
   ) {
     this.dataPos = elementsStart;
+    this.elementsStart = elementsStart;
   }
 
   /**
@@ -344,7 +388,7 @@ export class SequenceReader {
    * `inSeqData = true` (no alignment padding) and positioned in the data block.
    */
   readElement<T>(read: (r: BlueberryReader) => T): T {
-    const saved = this.parent._saveAndEnterDataBlock(this.dataPos);
+    const saved = this.parent._saveAndEnterDataBlock(this.dataPos, this.elementsStart);
     const value = read(this.parent);
     this.dataPos = this.parent._restoreFromDataBlock(saved);
     return value;
